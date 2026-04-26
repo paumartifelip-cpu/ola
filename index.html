@@ -100,6 +100,26 @@
   .card-title { font-size: 22px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.02em; }
   .card-hint { font-size: 14px; color: var(--muted); margin: 0 0 20px; }
 
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .import-link {
+    font-size: 13px; color: var(--accent); cursor: pointer;
+    background: none; border: 0; padding: 6px 0; font-weight: 500;
+    text-decoration: none; flex-shrink: 0;
+    border-radius: 0;
+  }
+  .import-link:hover { text-decoration: underline; opacity: 1; background: transparent; }
+  .import-link::before { content: "↓ "; }
+
+  .drop-zone {
+    border: 2px dashed transparent;
+    border-radius: var(--radius-sm);
+    transition: all 0.2s;
+  }
+  .drop-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(0, 113, 227, 0.04);
+  }
+
   textarea, input, select {
     width: 100%;
     background: var(--surface-2);
@@ -283,13 +303,22 @@
   <div class="grid">
 
     <div class="card">
-      <div class="card-label">01 · Contactos</div>
-      <h2 class="card-title">¿A quién?</h2>
-      <p class="card-hint">Un número por línea. Acepta <code>número</code> o <code>número, nombre</code>.</p>
-      <textarea class="numbers" id="numbers" placeholder="3312345678
+      <div class="card-head">
+        <div>
+          <div class="card-label">01 · Contactos</div>
+          <h2 class="card-title">¿A quién?</h2>
+        </div>
+        <button class="import-link" onclick="document.getElementById('file-input').click()">Importar archivo</button>
+      </div>
+      <p class="card-hint">Un número por línea. Acepta <code>número</code> o <code>número, nombre</code>. También puedes importar <code>.vcf</code> o <code>.csv</code>.</p>
+      <input type="file" id="file-input" accept=".vcf,.csv,.txt" style="display:none" multiple>
+      <div class="drop-zone" id="drop-zone">
+        <textarea class="numbers" id="numbers" placeholder="3312345678
 3334567890, María López
 +34 612 34 56 78, Carlos
-..."></textarea>
+
+O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
+      </div>
 
       <div class="field">
         <label class="field-label" for="country">País por defecto</label>
@@ -479,6 +508,114 @@
     $('stats').style.display = 'none';
     lastResults = [];
   }
+
+  function parseVCF(text) {
+    const contacts = [];
+    const cards = text.split(/END:VCARD/i);
+    cards.forEach(card => {
+      if (!/BEGIN:VCARD/i.test(card)) return;
+      const lines = card.split(/\r?\n/);
+      let name = '', phone = '';
+      lines.forEach(line => {
+        const fnMatch = line.match(/^FN(?:;[^:]*)?:(.+)$/i);
+        if (fnMatch && !name) name = fnMatch[1].trim();
+        if (!name) {
+          const nMatch = line.match(/^N(?:;[^:]*)?:(.+)$/i);
+          if (nMatch) {
+            const parts = nMatch[1].split(';').map(p => p.trim()).filter(Boolean);
+            if (parts.length >= 2) name = `${parts[1]} ${parts[0]}`.trim();
+            else if (parts[0]) name = parts[0];
+          }
+        }
+        const telMatch = line.match(/^TEL(?:;[^:]*)?:(.+)$/i);
+        if (telMatch && !phone) phone = telMatch[1].trim();
+      });
+      if (phone) contacts.push({ name, phone });
+    });
+    return contacts;
+  }
+
+  function parseCSV(text) {
+    const contacts = [];
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (!lines.length) return contacts;
+
+    const splitRow = (row) => {
+      const out = []; let cur = ''; let q = false;
+      for (let i = 0; i < row.length; i++) {
+        const c = row[i];
+        if (c === '"' && row[i+1] === '"') { cur += '"'; i++; }
+        else if (c === '"') q = !q;
+        else if (c === ',' && !q) { out.push(cur); cur = ''; }
+        else cur += c;
+      }
+      out.push(cur);
+      return out.map(s => s.trim());
+    };
+
+    const header = splitRow(lines[0]).map(h => h.toLowerCase());
+    const phoneKeys = ['phone','telephone','telefono','teléfono','mobile','celular','móvil','movil','tel','phone 1 - value','number'];
+    const nameKeys = ['name','nombre','full name','first name','display name','contact name'];
+
+    let phoneIdx = -1, nameIdx = -1;
+    header.forEach((h, i) => {
+      if (phoneIdx === -1 && phoneKeys.some(k => h.includes(k))) phoneIdx = i;
+      if (nameIdx === -1 && nameKeys.some(k => h.includes(k))) nameIdx = i;
+    });
+
+    // No headers detected: assume first col is phone, second name
+    const startRow = (phoneIdx >= 0) ? 1 : 0;
+    if (phoneIdx === -1) phoneIdx = 0;
+    if (nameIdx === -1) nameIdx = 1;
+
+    for (let i = startRow; i < lines.length; i++) {
+      const cols = splitRow(lines[i]);
+      const phone = (cols[phoneIdx] || '').trim();
+      const name = (cols[nameIdx] || '').trim();
+      if (phone) contacts.push({ name, phone });
+    }
+    return contacts;
+  }
+
+  async function importFiles(files) {
+    const allContacts = [];
+    for (const file of files) {
+      const text = await file.text();
+      const ext = file.name.split('.').pop().toLowerCase();
+      let parsed = [];
+      if (ext === 'vcf' || /BEGIN:VCARD/i.test(text)) parsed = parseVCF(text);
+      else if (ext === 'csv' || text.includes(',')) parsed = parseCSV(text);
+      else parsed = parseVCF(text).concat(parseCSV(text));
+      allContacts.push(...parsed);
+    }
+    if (!allContacts.length) {
+      showToast('No se encontraron contactos en el archivo');
+      return;
+    }
+    const lines = allContacts.map(c => c.name ? `${c.phone}, ${c.name}` : c.phone);
+    const existing = $('numbers').value.trim();
+    $('numbers').value = (existing ? existing + '\n' : '') + lines.join('\n');
+    showToast(`${allContacts.length} contacto(s) importado(s)`);
+  }
+
+  $('file-input').addEventListener('change', e => {
+    if (e.target.files.length) importFiles(Array.from(e.target.files));
+    e.target.value = '';
+  });
+
+  const dz = $('drop-zone');
+  ['dragenter','dragover'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    dz.classList.add('drag-over');
+  }));
+  ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); e.stopPropagation();
+    if (ev === 'dragleave' && e.target !== dz) return;
+    dz.classList.remove('drag-over');
+  }));
+  dz.addEventListener('drop', e => {
+    if (e.dataTransfer.files.length) importFiles(Array.from(e.dataTransfer.files));
+  });
 
   $('message').addEventListener('input', updatePreview);
   updatePreview();
