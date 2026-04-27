@@ -220,6 +220,17 @@
   .row-link .info { display: flex; flex-direction: column; min-width: 0; }
   .row-link .name { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
   .row-link .num { font-family: ui-monospace, monospace; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .row-link .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .row-link .chip {
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 11.5px;
+    padding: 3px 9px;
+    border-radius: 980px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+  }
+  .row-link .chip::before { content: ""; }
   .row-link .btns { display: flex; gap: 8px; flex-shrink: 0; }
   .row-link a, .row-link .icon-btn {
     font-size: 13px; padding: 7px 14px; border-radius: 980px;
@@ -310,14 +321,19 @@
         </div>
         <button class="import-link" onclick="document.getElementById('file-input').click()">Importar archivo</button>
       </div>
-      <p class="card-hint">Un número por línea. Acepta <code>número</code> o <code>número, nombre</code>. También puedes importar <code>.vcf</code> o <code>.csv</code>.</p>
+      <p class="card-hint">Un número por línea. Formato: <code>número, valor1, valor2, ...</code> según las columnas que definas abajo. También puedes importar <code>.vcf</code> o <code>.csv</code>.</p>
       <input type="file" id="file-input" accept=".vcf,.csv,.txt" style="display:none" multiple>
       <div class="drop-zone" id="drop-zone">
-        <textarea class="numbers" id="numbers" placeholder="3312345678
-3334567890, María López
-+34 612 34 56 78, Carlos
+        <textarea class="numbers" id="numbers" placeholder="3312345678, María López, Acme, Marketing
+3334567890, Carlos, Globant, IA
++34 612 34 56 78, Ana, Endeavor, Startups
 
 O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="vars">Columnas después del número</label>
+        <input type="text" id="vars" value="nombre" placeholder="nombre, empresa, tema">
       </div>
 
       <div class="field">
@@ -354,8 +370,8 @@ O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
     <div class="card">
       <div class="card-label">02 · Mensaje</div>
       <h2 class="card-title">¿Qué les dices?</h2>
-      <p class="card-hint">Usa <code>{nombre}</code> para personalizar cada uno.</p>
-      <textarea class="message" id="message">Hola {nombre}, ¿cómo estás? Te contacto porque...</textarea>
+      <p class="card-hint">Usa <code>{nombre}</code>, <code>{empresa}</code>, <code>{tema}</code> o cualquier otra variable que hayas definido.</p>
+      <textarea class="message" id="message">Hola {nombre}, vi que estás en {empresa}. Me encantaría platicar contigo sobre {tema}. ¿Tienes 20 min esta semana?</textarea>
       <div class="field">
         <label class="field-label">Vista previa</label>
         <div class="preview-bubble" id="preview"></div>
@@ -400,8 +416,30 @@ O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
     t._h = setTimeout(() => t.classList.remove('show'), 2000);
   }
 
-  function buildMessage(template, name) {
-    return template.replace(/\{nombre\}/gi, name || '').replace(/ +/g, ' ').replace(/ ,/g, ',').replace(/ \./g, '.').trim();
+  function buildMessage(template, vars) {
+    return template
+      .replace(/\{(\w+)\}/g, (_, key) => {
+        const k = key.toLowerCase();
+        const found = Object.keys(vars).find(vk => vk.toLowerCase() === k);
+        return found ? (vars[found] || '') : '';
+      })
+      .replace(/ +/g, ' ')
+      .replace(/ ,/g, ',')
+      .replace(/ \./g, '.')
+      .replace(/\s+([?!.])/g, '$1')
+      .trim();
+  }
+
+  function getVarNames() {
+    return $('vars').value.split(',').map(s => s.trim()).filter(Boolean);
+  }
+
+  function sampleVars() {
+    const names = getVarNames();
+    const samples = { nombre: 'Ana', empresa: 'Acme', tema: 'IA', titulo: 'CTO', email: 'ana@acme.com', cargo: 'Director' };
+    const out = {};
+    names.forEach(n => { out[n] = samples[n.toLowerCase()] || `[${n}]`; });
+    return out;
   }
 
   function normalize(rawNum, defaultCC) {
@@ -414,7 +452,7 @@ O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
 
   function updatePreview() {
     const tpl = $('message').value;
-    $('preview').textContent = buildMessage(tpl, 'Ana') || ' ';
+    $('preview').textContent = buildMessage(tpl, sampleVars()) || ' ';
   }
 
   function generate() {
@@ -432,12 +470,14 @@ O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
     }
 
     const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    const varNames = getVarNames();
     let valid = 0, invalid = 0;
 
     lines.forEach((line, i) => {
-      const parts = line.split(',').map(p => p.trim());
+      const parts = splitCSVLine(line);
       const rawNum = parts[0];
-      const name = parts[1] || '';
+      const vars = {};
+      varNames.forEach((vn, idx) => { vars[vn] = (parts[idx + 1] || '').trim(); });
       const num = normalize(rawNum, cc);
 
       if (!num || num.length < 8) {
@@ -449,17 +489,23 @@ O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
         return;
       }
 
-      const msg = buildMessage(tpl, name);
+      const displayName = vars.nombre || vars.name || Object.values(vars)[0] || `Contacto ${i+1}`;
+      const msg = buildMessage(tpl, vars);
       const url = `https://wa.me/${num}?text=${encodeURIComponent(msg)}`;
-      lastResults.push({ name: name || `Contacto ${i+1}`, num, url });
+      lastResults.push({ name: displayName, num, url, vars });
       valid++;
+
+      const varsLine = varNames
+        .map(vn => vars[vn] ? `<span class="chip">${escapeHTML(vn)}: ${escapeHTML(vars[vn])}</span>` : '')
+        .filter(Boolean).join('');
 
       const row = document.createElement('div');
       row.className = 'row-link';
       row.innerHTML = `
         <div class="info">
-          <div class="name">${escapeHTML(name || `Contacto ${i+1}`)}</div>
+          <div class="name">${escapeHTML(displayName)}</div>
           <div class="num">+${num}</div>
+          ${varsLine ? `<div class="chips">${varsLine}</div>` : ''}
         </div>
         <div class="btns">
           <button class="icon-btn copy" data-url="${url}">Copiar</button>
@@ -509,28 +555,53 @@ O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
     lastResults = [];
   }
 
+  function splitCSVLine(row) {
+    const out = []; let cur = ''; let q = false;
+    for (let i = 0; i < row.length; i++) {
+      const c = row[i];
+      if (c === '"' && row[i+1] === '"') { cur += '"'; i++; }
+      else if (c === '"') q = !q;
+      else if (c === ',' && !q) { out.push(cur); cur = ''; }
+      else cur += c;
+    }
+    out.push(cur);
+    return out.map(s => s.trim());
+  }
+
   function parseVCF(text) {
     const contacts = [];
     const cards = text.split(/END:VCARD/i);
     cards.forEach(card => {
       if (!/BEGIN:VCARD/i.test(card)) return;
       const lines = card.split(/\r?\n/);
-      let name = '', phone = '';
+      let nombre = '', phone = '', empresa = '', titulo = '', email = '';
       lines.forEach(line => {
         const fnMatch = line.match(/^FN(?:;[^:]*)?:(.+)$/i);
-        if (fnMatch && !name) name = fnMatch[1].trim();
-        if (!name) {
+        if (fnMatch && !nombre) nombre = fnMatch[1].trim();
+        if (!nombre) {
           const nMatch = line.match(/^N(?:;[^:]*)?:(.+)$/i);
           if (nMatch) {
             const parts = nMatch[1].split(';').map(p => p.trim()).filter(Boolean);
-            if (parts.length >= 2) name = `${parts[1]} ${parts[0]}`.trim();
-            else if (parts[0]) name = parts[0];
+            if (parts.length >= 2) nombre = `${parts[1]} ${parts[0]}`.trim();
+            else if (parts[0]) nombre = parts[0];
           }
         }
         const telMatch = line.match(/^TEL(?:;[^:]*)?:(.+)$/i);
         if (telMatch && !phone) phone = telMatch[1].trim();
+        const orgMatch = line.match(/^ORG(?:;[^:]*)?:(.+)$/i);
+        if (orgMatch && !empresa) empresa = orgMatch[1].split(';')[0].trim();
+        const titleMatch = line.match(/^TITLE(?:;[^:]*)?:(.+)$/i);
+        if (titleMatch && !titulo) titulo = titleMatch[1].trim();
+        const emailMatch = line.match(/^EMAIL(?:;[^:]*)?:(.+)$/i);
+        if (emailMatch && !email) email = emailMatch[1].trim();
       });
-      if (phone) contacts.push({ name, phone });
+      if (phone) {
+        const vars = { nombre };
+        if (empresa) vars.empresa = empresa;
+        if (titulo) vars.titulo = titulo;
+        if (email) vars.email = email;
+        contacts.push({ phone, vars });
+      }
     });
     return contacts;
   }
@@ -538,63 +609,89 @@ O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
   function parseCSV(text) {
     const contacts = [];
     const lines = text.split(/\r?\n/).filter(l => l.trim());
-    if (!lines.length) return contacts;
+    if (!lines.length) return { contacts, varNames: [] };
 
-    const splitRow = (row) => {
-      const out = []; let cur = ''; let q = false;
-      for (let i = 0; i < row.length; i++) {
-        const c = row[i];
-        if (c === '"' && row[i+1] === '"') { cur += '"'; i++; }
-        else if (c === '"') q = !q;
-        else if (c === ',' && !q) { out.push(cur); cur = ''; }
-        else cur += c;
-      }
-      out.push(cur);
-      return out.map(s => s.trim());
-    };
+    const phoneKeys = ['phone','telephone','telefono','teléfono','mobile','celular','móvil','movil','tel','phone 1 - value','number','numero','número'];
+    const headerCells = splitCSVLine(lines[0]);
+    const headerLower = headerCells.map(h => h.toLowerCase().trim());
 
-    const header = splitRow(lines[0]).map(h => h.toLowerCase());
-    const phoneKeys = ['phone','telephone','telefono','teléfono','mobile','celular','móvil','movil','tel','phone 1 - value','number'];
-    const nameKeys = ['name','nombre','full name','first name','display name','contact name'];
+    // Detect phone column
+    let phoneIdx = headerLower.findIndex(h => phoneKeys.some(k => h.includes(k)));
+    const hasHeader = phoneIdx >= 0 || headerCells.some(c => isNaN(c.replace(/\D/g,'')) && c.length < 25 && /[a-z]/i.test(c));
 
-    let phoneIdx = -1, nameIdx = -1;
-    header.forEach((h, i) => {
-      if (phoneIdx === -1 && phoneKeys.some(k => h.includes(k))) phoneIdx = i;
-      if (nameIdx === -1 && nameKeys.some(k => h.includes(k))) nameIdx = i;
-    });
+    let varNames = [];
+    let startRow = 0;
 
-    // No headers detected: assume first col is phone, second name
-    const startRow = (phoneIdx >= 0) ? 1 : 0;
-    if (phoneIdx === -1) phoneIdx = 0;
-    if (nameIdx === -1) nameIdx = 1;
+    if (hasHeader) {
+      if (phoneIdx === -1) phoneIdx = 0;
+      varNames = headerCells.map((h, i) => i === phoneIdx ? null : sanitizeVarName(h)).filter(Boolean);
+      startRow = 1;
+    } else {
+      phoneIdx = 0;
+      varNames = ['nombre'];
+    }
 
     for (let i = startRow; i < lines.length; i++) {
-      const cols = splitRow(lines[i]);
+      const cols = splitCSVLine(lines[i]);
       const phone = (cols[phoneIdx] || '').trim();
-      const name = (cols[nameIdx] || '').trim();
-      if (phone) contacts.push({ name, phone });
+      if (!phone) continue;
+      const vars = {};
+      let vi = 0;
+      cols.forEach((val, idx) => {
+        if (idx === phoneIdx) return;
+        if (varNames[vi]) vars[varNames[vi]] = val.trim();
+        vi++;
+      });
+      contacts.push({ phone, vars });
     }
-    return contacts;
+    return { contacts, varNames };
+  }
+
+  function sanitizeVarName(s) {
+    return s.toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_|_$/g, '') || 'col';
   }
 
   async function importFiles(files) {
     const allContacts = [];
+    const allVarNames = new Set();
     for (const file of files) {
       const text = await file.text();
       const ext = file.name.split('.').pop().toLowerCase();
-      let parsed = [];
-      if (ext === 'vcf' || /BEGIN:VCARD/i.test(text)) parsed = parseVCF(text);
-      else if (ext === 'csv' || text.includes(',')) parsed = parseCSV(text);
-      else parsed = parseVCF(text).concat(parseCSV(text));
-      allContacts.push(...parsed);
+      if (ext === 'vcf' || /BEGIN:VCARD/i.test(text)) {
+        const parsed = parseVCF(text);
+        parsed.forEach(c => Object.keys(c.vars).forEach(k => allVarNames.add(k)));
+        allContacts.push(...parsed);
+      } else {
+        const { contacts, varNames } = parseCSV(text);
+        varNames.forEach(v => allVarNames.add(v));
+        allContacts.push(...contacts);
+      }
     }
     if (!allContacts.length) {
       showToast('No se encontraron contactos en el archivo');
       return;
     }
-    const lines = allContacts.map(c => c.name ? `${c.phone}, ${c.name}` : c.phone);
+
+    // Update vars field with detected columns (preserve order: nombre first if present)
+    const varList = Array.from(allVarNames);
+    varList.sort((a, b) => (a === 'nombre' ? -1 : b === 'nombre' ? 1 : 0));
+    if (varList.length) $('vars').value = varList.join(', ');
+
+    // Convert contacts to textarea lines using the var order
+    const lines = allContacts.map(c => {
+      const cells = [c.phone, ...varList.map(v => (c.vars[v] || '').replace(/,/g, ' '))];
+      // trim trailing empty cells
+      while (cells.length > 1 && !cells[cells.length-1]) cells.pop();
+      return cells.join(', ');
+    });
+
     const existing = $('numbers').value.trim();
     $('numbers').value = (existing ? existing + '\n' : '') + lines.join('\n');
+    updatePreview();
+    persist();
     showToast(`${allContacts.length} contacto(s) importado(s)`);
   }
 
@@ -624,17 +721,20 @@ O arrastra aquí un .vcf o .csv exportado de tus contactos"></textarea>
     const saved = JSON.parse(localStorage.getItem('ola') || '{}');
     if (saved.message) $('message').value = saved.message;
     if (saved.country) $('country').value = saved.country;
+    if (saved.vars) $('vars').value = saved.vars;
     updatePreview();
   } catch(e){}
 
   function persist() {
     localStorage.setItem('ola', JSON.stringify({
       message: $('message').value,
-      country: $('country').value
+      country: $('country').value,
+      vars: $('vars').value
     }));
   }
   $('message').addEventListener('input', persist);
   $('country').addEventListener('change', persist);
+  $('vars').addEventListener('input', () => { persist(); updatePreview(); });
 </script>
 
 </body>
